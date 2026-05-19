@@ -20,6 +20,7 @@ import { log } from "./logger.ts"
  */
 export interface PluginSettings {
   enable1mContext?: boolean
+  claudeCodeCredentialPath?: string
 }
 
 let settings: PluginSettings = {}
@@ -43,37 +44,65 @@ export function applyOpencodeConfig(config: unknown): void {
 
   const cfg = config as Record<string, unknown>
   const agents = cfg.agent as Record<string, unknown> | undefined
+  const provider = cfg.provider as Record<string, unknown> | undefined
+  let loadedKeys = 0
 
-  if (!agents || typeof agents !== "object") return
+  const claudeAuthProvider = provider?.["claude-auth"]
+  const claudeAuthOptions =
+    claudeAuthProvider && typeof claudeAuthProvider === "object"
+      ? (claudeAuthProvider as Record<string, unknown>).options
+      : undefined
+  const credentialPath =
+    claudeAuthOptions && typeof claudeAuthOptions === "object"
+      ? (claudeAuthOptions as Record<string, unknown>).claudeCodeCredentialPath
+      : undefined
 
-  for (const agentConfig of Object.values(agents)) {
-    if (!agentConfig || typeof agentConfig !== "object") continue
-    const agent = agentConfig as Record<string, unknown>
+  if (typeof credentialPath === "string") {
+    settings.claudeCodeCredentialPath = credentialPath
+    loadedKeys += 1
+    log("config_loaded", { claudeCodeCredentialPath: credentialPath })
+  } else if (credentialPath !== undefined) {
+    log("config_invalid_type", {
+      key: "claudeCodeCredentialPath",
+      expectedType: "string",
+      actualType: typeof credentialPath,
+    })
+  }
 
-    // Check top-level first, then fall back to options (where OpenCode's
-    // Zod transform may relocate unknown keys)
-    const val =
-      agent.enable1mContext ??
-      (agent.options as Record<string, unknown> | undefined)?.enable1mContext
+  if (agents && typeof agents === "object") {
+    for (const agentConfig of Object.values(agents)) {
+      if (!agentConfig || typeof agentConfig !== "object") continue
+      const agent = agentConfig as Record<string, unknown>
 
-    if (typeof val === "boolean") {
-      settings.enable1mContext = val
-      log("config_loaded", { enable1mContext: val })
-      return
-    }
+      // Check top-level first, then fall back to options (where OpenCode's
+      // Zod transform may relocate unknown keys)
+      const val =
+        agent.enable1mContext ??
+        (agent.options as Record<string, unknown> | undefined)?.enable1mContext
 
-    if (val !== undefined) {
-      log("config_invalid_type", {
-        key: "enable1mContext",
-        expectedType: "boolean",
-        actualType: typeof val,
-      })
+      if (typeof val === "boolean") {
+        settings.enable1mContext = val
+        loadedKeys += 1
+        log("config_loaded", { enable1mContext: val })
+        break
+      }
+
+      if (val !== undefined) {
+        log("config_invalid_type", {
+          key: "enable1mContext",
+          expectedType: "boolean",
+          actualType: typeof val,
+        })
+      }
     }
   }
 
-  log("config_no_plugin_keys", {
-    agentCount: Object.keys(agents).length,
-  })
+  if (loadedKeys === 0) {
+    log("config_no_plugin_keys", {
+      agentCount:
+        agents && typeof agents === "object" ? Object.keys(agents).length : 0,
+    })
+  }
 }
 
 /**
@@ -93,4 +122,8 @@ export function resetPluginSettings(): void {
 
 export function getPluginSettings(): Readonly<PluginSettings> {
   return { ...settings }
+}
+
+export function getClaudeCodeCredentialPath(): string | undefined {
+  return settings.claudeCodeCredentialPath
 }

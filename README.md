@@ -79,8 +79,26 @@ Just run OpenCode. The plugin handles auth automatically — it reads your Claud
 
 The plugin checks these in order:
 
-1. macOS Keychain (all `Claude Code-credentials*` entries — multiple accounts are detected automatically)
-2. `~/.claude/.credentials.json` (fallback, works on all platforms)
+1. `provider.claude-auth.options.claudeCodeCredentialPath` in `opencode.json` (if configured)
+2. macOS Keychain (all `Claude Code-credentials*` entries — multiple accounts are detected automatically)
+3. `~/.claude/.credentials.json` (fallback, works on all platforms)
+
+To use a custom Claude Code credentials file, add it under `provider.claude-auth.options`:
+
+```json
+{
+  "plugin": ["opencode-claude-auth@latest"],
+  "provider": {
+    "claude-auth": {
+      "options": {
+        "claudeCodeCredentialPath": "~/.claude/custom.credentials.json"
+      }
+    }
+  }
+}
+```
+
+The path supports `~`. A `file:` prefix is accepted but not required. If the configured file is missing or invalid, the plugin fails instead of falling back to the normal sources.
 
 ## Multiple accounts (macOS)
 

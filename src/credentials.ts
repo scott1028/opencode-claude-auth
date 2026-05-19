@@ -62,6 +62,10 @@ function getActiveAccount(): ClaudeAccount | null {
   return allAccounts[0]
 }
 
+function isFileAccountSource(source: string): boolean {
+  return source === "file" || source.startsWith("file:")
+}
+
 function getAccountStateFile(): string {
   return join(
     homedir(),
@@ -278,7 +282,7 @@ export function refreshIfNeeded(
   // ~2x/min under load. macOS keychain sources stay on the in-memory path;
   // their state is mutated only by our own writeBackCredentials, so no
   // external-update vector exists for them.
-  if (target.source === "file") {
+  if (isFileAccountSource(target.source)) {
     const onDisk = refreshAccount(target.source)
     if (onDisk) target.credentials = onDisk
   }

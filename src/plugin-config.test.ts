@@ -79,6 +79,22 @@ describe("plugin-config", () => {
       assert.equal(getPluginSettings().enable1mContext, true)
     })
 
+    it("reads claudeCodeCredentialPath from provider claude-auth options", () => {
+      applyOpencodeConfig({
+        provider: {
+          "claude-auth": {
+            options: {
+              claudeCodeCredentialPath: "~/.claude/custom.credentials.json",
+            },
+          },
+        },
+      })
+      assert.equal(
+        getPluginSettings().claudeCodeCredentialPath,
+        "~/.claude/custom.credentials.json",
+      )
+    })
+
     it("ignores non-object config", () => {
       applyOpencodeConfig(null)
       applyOpencodeConfig(undefined)
@@ -92,11 +108,33 @@ describe("plugin-config", () => {
       assert.equal(getPluginSettings().enable1mContext, undefined)
     })
 
+    it("ignores claudeCodeCredentialPath outside provider options", () => {
+      applyOpencodeConfig({
+        agent: {
+          build: {
+            claudeCodeCredentialPath: "~/.claude/custom.credentials.json",
+          },
+        },
+      })
+      assert.equal(getPluginSettings().claudeCodeCredentialPath, undefined)
+    })
+
     it("ignores non-boolean enable1mContext values", () => {
       applyOpencodeConfig({
         agent: { build: { enable1mContext: "true" } },
       })
       assert.equal(getPluginSettings().enable1mContext, undefined)
+    })
+
+    it("ignores non-string claudeCodeCredentialPath values", () => {
+      applyOpencodeConfig({
+        provider: {
+          "claude-auth": {
+            options: { claudeCodeCredentialPath: true },
+          },
+        },
+      })
+      assert.equal(getPluginSettings().claudeCodeCredentialPath, undefined)
     })
 
     it("takes first boolean value found in iteration order", () => {

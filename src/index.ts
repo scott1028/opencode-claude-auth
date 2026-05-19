@@ -221,23 +221,51 @@ const plugin: Plugin = async () => {
   initLogger()
 
   let accounts: ClaudeAccount[] = []
-  try {
-    accounts = readAllClaudeAccounts()
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-    log("plugin_init_error", { error })
-    console.warn(
-      "opencode-claude-auth: Failed to read Claude Code credentials:",
-      error,
-    )
-    return {}
+  let defaultAccountSource: string | null = null
+  let syncTimer: ReturnType<typeof setInterval> | null = null
+
+  const startSyncTimer = () => {
+    if (syncTimer) return
+
+    // Keep auth.json synced with current credentials (no refresh triggered)
+    syncTimer = setInterval(() => {
+      try {
+        const creds = getCredentialsForSync()
+        if (creds) syncAuthJson(creds)
+      } catch {
+        // Non-fatal
+      }
+    }, SYNC_INTERVAL)
+    syncTimer.unref()
   }
 
-  initAccounts(accounts)
+  const initializeAccounts = (event: string): boolean => {
+    try {
+      accounts = readAllClaudeAccounts()
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      accounts = []
+      initAccounts(accounts)
+      defaultAccountSource = null
+      log(`${event}_error`, { error })
+      console.warn(
+        "opencode-claude-auth: Failed to read Claude Code credentials:",
+        error,
+      )
+      return false
+    }
 
-  const defaultAccountSource = accounts[0]?.source ?? null
+    initAccounts(accounts)
+    defaultAccountSource = accounts[0]?.source ?? null
 
-  if (accounts.length > 0) {
+    if (accounts.length === 0) {
+      log(`${event}_no_accounts`, { reason: "no credentials found" })
+      console.warn(
+        "opencode-claude-auth: No Claude Code credentials found. Running in API key mode with transform hook enabled.",
+      )
+      return true
+    }
+
     const persistedSource = loadPersistedAccountSource()
     const defaultAccount =
       (persistedSource && accounts.find((a) => a.source === persistedSource)) ||
@@ -245,7 +273,7 @@ const plugin: Plugin = async () => {
 
     setActiveAccountSource(defaultAccount.source)
 
-    log("plugin_init", {
+    log(event, {
       accountCount: accounts.length,
       sources: accounts.map((a) => a.source),
       activeSource: defaultAccount.source,
@@ -260,26 +288,16 @@ const plugin: Plugin = async () => {
       )
     }
 
-    // Keep auth.json synced with current credentials (no refresh triggered)
-    const syncTimer = setInterval(() => {
-      try {
-        const creds = getCredentialsForSync()
-        if (creds) syncAuthJson(creds)
-      } catch {
-        // Non-fatal
-      }
-    }, SYNC_INTERVAL)
-    syncTimer.unref()
-  } else {
-    log("plugin_init_no_accounts", { reason: "no credentials found" })
-    console.warn(
-      "opencode-claude-auth: No Claude Code credentials found. Running in API key mode with transform hook enabled.",
-    )
+    startSyncTimer()
+    return true
   }
+
+  if (!initializeAccounts("plugin_init")) return {}
 
   return {
     config: async (opencodeConfig) => {
       applyOpencodeConfig(opencodeConfig)
+      initializeAccounts("plugin_config_reload")
     },
     "experimental.chat.system.transform": async (input, output) => {
       if (input.model?.providerID !== "anthropic") {
@@ -527,7 +545,9 @@ const plugin: Plugin = async () => {
             const sourceDescription =
               chosen.source === "file"
                 ? "credentials file (~/.claude/.credentials.json)"
-                : "macOS Keychain"
+                : chosen.source.startsWith("file:")
+                  ? `credentials file (${chosen.source.slice("file:".length)})`
+                  : "macOS Keychain"
 
             return {
               url: "",

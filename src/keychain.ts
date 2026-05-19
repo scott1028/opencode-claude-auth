@@ -1,8 +1,9 @@
 import { execFileSync, execSync } from "node:child_process"
 import { chmodSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import { log } from "./logger.ts"
+import { getClaudeCodeCredentialPath } from "./plugin-config.ts"
 
 export interface ClaudeCredentials {
   accessToken: string
@@ -18,6 +19,36 @@ export interface ClaudeAccount {
 }
 
 const PRIMARY_SERVICE = "Claude Code-credentials"
+const FILE_SOURCE_PREFIX = "file:"
+
+function getDefaultCredentialPath(): string {
+  return join(homedir(), ".claude", ".credentials.json")
+}
+
+function expandCredentialPath(path: string): string {
+  const normalized = path.startsWith(FILE_SOURCE_PREFIX)
+    ? path.slice(FILE_SOURCE_PREFIX.length)
+    : path
+  const expanded =
+    normalized === "~"
+      ? homedir()
+      : normalized.startsWith("~/") || normalized.startsWith("~\\")
+        ? join(homedir(), normalized.slice(2))
+        : normalized
+  return isAbsolute(expanded) ? expanded : resolve(expanded)
+}
+
+function getCredentialPathForSource(source: string): string | null {
+  if (source === "file") return getDefaultCredentialPath()
+  if (source.startsWith(FILE_SOURCE_PREFIX)) {
+    return source.slice(FILE_SOURCE_PREFIX.length)
+  }
+  return null
+}
+
+function buildFileSource(path: string): string {
+  return `${FILE_SOURCE_PREFIX}${path}`
+}
 
 function parseCredentials(raw: string): ClaudeCredentials | null {
   let parsed: unknown
@@ -173,16 +204,38 @@ function listClaudeKeychainServices(): string[] {
   }
 }
 
-function readCredentialsFile(): ClaudeCredentials | null {
+function readCredentialsFile(
+  credPath: string = getDefaultCredentialPath(),
+): ClaudeCredentials | null {
   try {
-    const credPath = join(homedir(), ".claude", ".credentials.json")
     const raw = readFileSync(credPath, "utf-8")
     const creds = parseCredentials(raw)
-    log("credentials_file_read", { success: creds !== null })
+    log("credentials_file_read", { path: credPath, success: creds !== null })
     return creds
   } catch {
-    log("credentials_file_read", { success: false })
+    log("credentials_file_read", { path: credPath, success: false })
     return null
+  }
+}
+
+function readConfiguredCredentialsFileAccount(): ClaudeAccount | null {
+  const configuredPath = getClaudeCodeCredentialPath()
+  if (!configuredPath) return null
+
+  const credPath = expandCredentialPath(configuredPath)
+  const creds = readCredentialsFile(credPath)
+  if (!creds) {
+    log("credentials_file_configured_failed", { path: credPath })
+    throw new Error(
+      `Configured Claude Code credentials file not found or invalid: ${credPath}`,
+    )
+  }
+
+  const [label] = buildAccountLabels([creds])
+  return {
+    label,
+    source: buildFileSource(credPath),
+    credentials: creds,
   }
 }
 
@@ -209,6 +262,9 @@ export function buildAccountLabels(credsList: ClaudeCredentials[]): string[] {
 }
 
 export function readAllClaudeAccounts(): ClaudeAccount[] {
+  const configuredAccount = readConfiguredCredentialsFileAccount()
+  if (configuredAccount) return [configuredAccount]
+
   if (process.platform !== "darwin") {
     const creds = readCredentialsFile()
     if (!creds) return []
@@ -293,15 +349,15 @@ export function writeBackCredentials(
     expiresAt: creds.expiresAt,
   }
 
-  if (source === "file") {
+  const credentialPath = getCredentialPathForSource(source)
+  if (credentialPath) {
     try {
-      const credPath = join(homedir(), ".claude", ".credentials.json")
-      const raw = readFileSync(credPath, "utf-8")
+      const raw = readFileSync(credentialPath, "utf-8")
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false
-      writeFileSync(credPath, updated, { encoding: "utf-8", mode: 0o600 })
+      writeFileSync(credentialPath, updated, { encoding: "utf-8", mode: 0o600 })
       if (process.platform !== "win32") {
-        chmodSync(credPath, 0o600)
+        chmodSync(credentialPath, 0o600)
       }
       log("writeback_success", { source })
       return true
@@ -347,8 +403,9 @@ export function writeBackCredentials(
 }
 
 export function refreshAccount(source: string): ClaudeCredentials | null {
-  if (source === "file") {
-    return readCredentialsFile()
+  const credentialPath = getCredentialPathForSource(source)
+  if (credentialPath) {
+    return readCredentialsFile(credentialPath)
   }
   const raw = readKeychainService(source)
   if (!raw) return null

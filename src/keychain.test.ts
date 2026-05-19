@@ -6,9 +6,12 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
   buildAccountLabels,
+  readAllClaudeAccounts,
+  refreshAccount,
   updateCredentialBlob,
   writeBackCredentials,
 } from "./keychain.ts"
+import { applyOpencodeConfig, resetPluginSettings } from "./plugin-config.ts"
 import { chmodSync, statSync } from "node:fs"
 import { mkdtemp } from "node:fs/promises"
 
@@ -426,6 +429,185 @@ describe("credentials file fallback", () => {
   })
 })
 
+describe("configured credentials file", () => {
+  it("uses provider claude-auth credential path before the default file", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cfg-"))
+    process.env.HOME = tempHome
+    resetPluginSettings()
+
+    try {
+      const customPath = join(tempHome, "custom.credentials.json")
+      writeFileSync(
+        customPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "custom-at",
+            refreshToken: "custom-rt",
+            expiresAt: 1700000000000,
+          },
+        }),
+      )
+      applyOpencodeConfig({
+        provider: {
+          "claude-auth": {
+            options: { claudeCodeCredentialPath: customPath },
+          },
+        },
+      })
+
+      const accounts = readAllClaudeAccounts()
+
+      assert.equal(accounts.length, 1)
+      assert.equal(accounts[0].source, `file:${customPath}`)
+      assert.equal(accounts[0].credentials.accessToken, "custom-at")
+    } finally {
+      resetPluginSettings()
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("expands ~ in provider claude-auth credential path", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-tilde-"),
+    )
+    process.env.HOME = tempHome
+    resetPluginSettings()
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const customPath = join(claudeDir, "custom.credentials.json")
+      writeFileSync(
+        customPath,
+        JSON.stringify({
+          accessToken: "tilde-at",
+          refreshToken: "tilde-rt",
+          expiresAt: 1700000000000,
+        }),
+      )
+      applyOpencodeConfig({
+        provider: {
+          "claude-auth": {
+            options: {
+              claudeCodeCredentialPath: "~/.claude/custom.credentials.json",
+            },
+          },
+        },
+      })
+
+      const accounts = readAllClaudeAccounts()
+
+      assert.equal(accounts.length, 1)
+      assert.equal(accounts[0].source, `file:${customPath}`)
+      assert.equal(accounts[0].credentials.accessToken, "tilde-at")
+    } finally {
+      resetPluginSettings()
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("accepts an optional file: prefix in provider claude-auth credential path", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-file-prefix-"),
+    )
+    process.env.HOME = tempHome
+    resetPluginSettings()
+
+    try {
+      const customPath = join(tempHome, "custom.credentials.json")
+      writeFileSync(
+        customPath,
+        JSON.stringify({
+          accessToken: "file-prefix-at",
+          refreshToken: "file-prefix-rt",
+          expiresAt: 1700000000000,
+        }),
+      )
+      applyOpencodeConfig({
+        provider: {
+          "claude-auth": {
+            options: {
+              claudeCodeCredentialPath: `file:${customPath}`,
+            },
+          },
+        },
+      })
+
+      const accounts = readAllClaudeAccounts()
+
+      assert.equal(accounts.length, 1)
+      assert.equal(accounts[0].source, `file:${customPath}`)
+      assert.equal(accounts[0].credentials.accessToken, "file-prefix-at")
+    } finally {
+      resetPluginSettings()
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("fails when configured credential path is missing", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-cfg-fallback-"),
+    )
+    process.env.HOME = tempHome
+    resetPluginSettings()
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const defaultPath = join(claudeDir, ".credentials.json")
+      writeFileSync(
+        defaultPath,
+        JSON.stringify({
+          accessToken: "default-at",
+          refreshToken: "default-rt",
+          expiresAt: 1700000000000,
+        }),
+      )
+      applyOpencodeConfig({
+        provider: {
+          "claude-auth": {
+            options: {
+              claudeCodeCredentialPath: join(tempHome, "missing.json"),
+            },
+          },
+        },
+      })
+
+      assert.throws(
+        () => readAllClaudeAccounts(),
+        /Configured Claude Code credentials file not found or invalid/,
+      )
+    } finally {
+      resetPluginSettings()
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("updateCredentialBlob", () => {
   it("updates tokens in claudeAiOauth wrapper format", () => {
     const existing = JSON.stringify({
@@ -499,6 +681,67 @@ describe("updateCredentialBlob", () => {
 })
 
 describe("writeBackCredentials (file source)", () => {
+  it("refreshAccount reads a custom file source", async () => {
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-refresh-custom-"),
+    )
+
+    try {
+      const credPath = join(tempHome, "custom.credentials.json")
+      writeFileSync(
+        credPath,
+        JSON.stringify({
+          accessToken: "custom-at",
+          refreshToken: "custom-rt",
+          expiresAt: 1700000000000,
+        }),
+      )
+
+      const result = refreshAccount(`file:${credPath}`)
+
+      assert.equal(result?.accessToken, "custom-at")
+      assert.equal(result?.refreshToken, "custom-rt")
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("writes back to a custom file source", async () => {
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-wb-custom-"),
+    )
+
+    try {
+      const credPath = join(tempHome, "custom.credentials.json")
+      writeFileSync(
+        credPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "old-at",
+            refreshToken: "old-rt",
+            expiresAt: 1000,
+            subscriptionType: "pro",
+          },
+        }),
+        { encoding: "utf-8", mode: 0o600 },
+      )
+
+      const result = writeBackCredentials(`file:${credPath}`, {
+        accessToken: "new-at",
+        refreshToken: "new-rt",
+        expiresAt: 2000,
+      })
+
+      assert.equal(result, true)
+      const written = JSON.parse(readFileSync(credPath, "utf-8"))
+      assert.equal(written.claudeAiOauth.accessToken, "new-at")
+      assert.equal(written.claudeAiOauth.refreshToken, "new-rt")
+      assert.equal(written.claudeAiOauth.expiresAt, 2000)
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("reads, updates, and writes back credentials to file", async () => {
     const originalHome = process.env.HOME
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-wb-"))
